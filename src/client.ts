@@ -1,26 +1,15 @@
 /**
- * `ZhihuSearchProvider`: a `WebSearchProvider` backed by Zhihu OpenAPI
- * `GET /api/v1/content/zhihu_search`. Maps `Url`/`Title`/`ContentText`/`EditTime`
- * into the seam's normalized `WebSearchResult`.
- * @module @wangshaodan/web-search-zhihu-insite/provider
+ * HTTP client for Zhihu OpenAPI `GET /api/v1/content/zhihu_search`.
+ * Maps `Url`/`Title`/`ContentText`/`EditTime` into the tool's `ZhihuSearchResult`.
+ * @module @wangshaodan/web-search-zhihu-insite/client
  */
 
-import { WebError } from '@deepseek-ai/dsh-web'
-import type {
-  WebSearchProvider,
-  WebSearchRequest,
-  WebSearchResult,
-  WebSearchSource,
-} from '@deepseek-ai/dsh-web'
-import type { ZhihuError, ZhihuSearchItem, ZhihuSearchResponse } from './types.ts'
-
-/** Stable id this provider registers under. */
-export const ZHIHU_PROVIDER_ID = 'zhihu-insite-search'
+import type { ZhihuError, ZhihuSearchItem, ZhihuSearchResponse, ZhihuSearchResult, ZhihuSearchSource } from './types.ts'
 
 /** Default OpenAPI origin; `/api/v1/content/zhihu_search` is appended. */
 export const ZHIHU_DEFAULT_BASE_URL = 'https://developer.zhihu.com'
 
-/** Default result count when a request carries no `maxResults`. Matches the API default. */
+/** Default result count when config omits `searchMaxResults`. Matches the API default. */
 export const ZHIHU_DEFAULT_NUM_RESULTS = 10
 
 /** Zhihu in-site `Count` upper bound (skill script clamp, free-tier API cap). */
@@ -32,11 +21,30 @@ export const ZHIHU_DEFAULT_TIMEOUT_MS = 30_000
 /** Path appended to {@link ZHIHU_DEFAULT_BASE_URL} when no full endpoint is set. */
 export const ZHIHU_SEARCH_PATH = '/api/v1/content/zhihu_search'
 
-/** Attribution header sent on every request. Bump with the package version. */
-const USER_AGENT = '@wangshaodan/web-search-zhihu-insite/0.1.0'
+/** Model-facing tool name registered by this plugin. */
+export const ZHIHU_SEARCH_TOOL_NAME = 'zhihu_search'
 
-/** Resolved provider options (the plugin's `apply` supplies env-var and constant defaults). */
-export interface ZhihuSearchProviderOptions {
+/** Attribution header sent on every request. Bump with the package version. */
+const USER_AGENT = '@wangshaodan/web-search-zhihu-insite/0.2.0'
+
+export type ZhihuSearchErrorCode =
+  | 'ZHIHU_SEARCH_CREDENTIAL_MISSING'
+  | 'ZHIHU_SEARCH_ERROR'
+  | 'ZHIHU_SEARCH_ABORTED'
+
+/** Typed failure thrown by {@link ZhihuSearchClient}; `ToolRuntime` surfaces `message` to the model. */
+export class ZhihuSearchError extends Error {
+  readonly code: ZhihuSearchErrorCode
+
+  constructor(message: string, code: ZhihuSearchErrorCode, options?: { cause?: unknown }) {
+    super(message, options)
+    this.name = 'ZhihuSearchError'
+    this.code = code
+  }
+}
+
+/** Resolved client options (the plugin's `apply` supplies env-var and constant defaults). */
+export interface ZhihuSearchClientOptions {
   /**
    * Literal Bearer token. Prefer {@link resolveApiKey} so `$DSH_HOME/.credentials.yaml`
    * and the launching environment can supply the value per search.
@@ -53,8 +61,6 @@ export interface ZhihuSearchProviderOptions {
   baseURL: string
   /** Full search URL. When set, it wins over `baseURL` + path. */
   endpoint?: string
-  /** Default result count when a request carries no `maxResults`. */
-  numResults: number
   /** Abort the HTTP request after this many milliseconds. */
   timeoutMs: number
 }
@@ -62,7 +68,7 @@ export interface ZhihuSearchProviderOptions {
 /**
  * Build the request URL. An explicit `endpoint` wins; otherwise `baseURL` + path.
  */
-export function resolveSearchUrl(options: Pick<ZhihuSearchProviderOptions, 'baseURL' | 'endpoint'>): string {
+export function resolveSearchUrl(options: Pick<ZhihuSearchClientOptions, 'baseURL' | 'endpoint'>): string {
   if (options.endpoint !== undefined && options.endpoint.length > 0) return options.endpoint
   return `${options.baseURL.replace(/\/+$/, '')}${ZHIHU_SEARCH_PATH}`
 }
@@ -95,7 +101,7 @@ export function editTimeToIso(editTime: number | null | undefined): string | und
 /**
  * Map one Zhihu item to a normalized source, or `undefined` when it has no URL.
  */
-export function mapZhihuItem(item: ZhihuSearchItem): WebSearchSource | undefined {
+export function mapZhihuItem(item: ZhihuSearchItem): ZhihuSearchSource | undefined {
   const url = item.Url?.trim()
   if (url === undefined || url.length === 0) return undefined
   const title = item.Title?.trim()
@@ -113,33 +119,24 @@ export function mapZhihuItem(item: ZhihuSearchItem): WebSearchSource | undefined
  * Map a Zhihu success envelope to a normalized search result.
  * Business `Code !== 0` and a missing/non-array `Items` are caller errors, not this mapper.
  */
-export function mapZhihuResponse(response: ZhihuSearchResponse): WebSearchResult {
+export function mapZhihuResponse(response: ZhihuSearchResponse): ZhihuSearchResult {
   const items = response.Data?.Items ?? []
   const sources = items
     .map(mapZhihuItem)
-    .filter((source): source is WebSearchSource => source !== undefined)
+    .filter((source): source is ZhihuSearchSource => source !== undefined)
   return { sources, truncated: false }
 }
 
-/** The Zhihu in-site search provider; HTTP redirects fail as `WEB_PROVIDER_ERROR`. */
-export class ZhihuSearchProvider implements WebSearchProvider {
-  readonly id = ZHIHU_PROVIDER_ID
+/** HTTP client for one Zhihu in-site search. Redirects fail as `ZHIHU_SEARCH_ERROR`. */
+export class ZhihuSearchClient {
+  constructor(private readonly options: ZhihuSearchClientOptions) {}
 
-  constructor(private readonly options: ZhihuSearchProviderOptions) {}
-
-  available(): boolean {
-    return ((this.options.apiKey?.length ?? 0) > 0 || this.options.resolveApiKey !== undefined)
-      && URL.canParse(resolveSearchUrl(this.options))
-      && isPositiveInteger(this.options.numResults)
-      && isPositiveInteger(this.options.timeoutMs)
-  }
-
-  async search(request: WebSearchRequest, signal?: AbortSignal): Promise<WebSearchResult> {
+  async search(query: string, maxResults: number, signal?: AbortSignal): Promise<ZhihuSearchResult> {
     const apiKey = await this.loadApiKey(signal)
-    const count = clampCount(request.maxResults ?? this.options.numResults)
+    const count = clampCount(maxResults)
     const endpoint = resolveSearchUrl(this.options)
     const url = new URL(endpoint)
-    url.searchParams.set('Query', request.query)
+    url.searchParams.set('Query', query)
     url.searchParams.set('Count', String(count))
 
     const timeout = AbortSignal.timeout(this.options.timeoutMs)
@@ -172,22 +169,25 @@ export class ZhihuSearchProvider implements WebSearchProvider {
       payload = await response.json() as ZhihuSearchResponse
     } catch (error: unknown) {
       if (isAbortError(error)) throw abortError(signal)
-      throw new WebError(`Zhihu returned an unprocessable response body: ${String(error)}`, 'WEB_PROVIDER_ERROR', { cause: error })
+      throw new ZhihuSearchError(`Zhihu returned an unprocessable response body: ${String(error)}`, 'ZHIHU_SEARCH_ERROR', { cause: error })
     }
 
     if (payload.Code !== 0) {
       const detail = payload.Message?.trim()
-      throw new WebError(
+      throw new ZhihuSearchError(
         detail !== undefined && detail.length > 0
           ? detail
           : `Zhihu API error (Code ${String(payload.Code)})`,
-        'WEB_PROVIDER_ERROR',
+        'ZHIHU_SEARCH_ERROR',
       )
     }
     if (payload.Data != null && payload.Data.Items !== undefined && !Array.isArray(payload.Data.Items)) {
-      throw new WebError('Zhihu returned an unprocessable response body: Data.Items is not an array', 'WEB_PROVIDER_ERROR')
+      throw new ZhihuSearchError('Zhihu returned an unprocessable response body: Data.Items is not an array', 'ZHIHU_SEARCH_ERROR')
     }
-    return mapZhihuResponse(payload)
+
+    const mapped = mapZhihuResponse(payload)
+    if (mapped.sources.length <= count) return mapped
+    return { sources: mapped.sources.slice(0, count), truncated: true }
   }
 
   private async loadApiKey(signal?: AbortSignal): Promise<string> {
@@ -197,27 +197,27 @@ export class ZhihuSearchProvider implements WebSearchProvider {
       resolved = await this.options.resolveApiKey?.()
     } catch (error: unknown) {
       if (signal?.aborted === true || isAbortError(error)) throw abortError(signal)
-      throw new WebError(`Zhihu search credential resolution failed: ${String(error)}`, 'WEB_PROVIDER_ERROR', { cause: error })
+      throw new ZhihuSearchError(`Zhihu search credential resolution failed: ${String(error)}`, 'ZHIHU_SEARCH_ERROR', { cause: error })
     }
     if (signal?.aborted === true) throw abortError(signal)
     if (resolved !== undefined && resolved.length > 0) return resolved
     const ref = this.options.apiKeyEnv ?? 'ZHIHU_ACCESS_SECRET'
-    throw new WebError(
+    throw new ZhihuSearchError(
       `Zhihu search has no access secret for "${ref}"; export ${ref}, store it in $DSH_HOME/.credentials.yaml, or set a literal "apiKey" in the web-search-zhihu-insite config`,
-      'WEB_PROVIDER_CREDENTIAL_MISSING',
+      'ZHIHU_SEARCH_CREDENTIAL_MISSING',
     )
   }
 }
 
-function mapFetchFailure(error: unknown, signal: AbortSignal | undefined, timeoutMs: number): WebError {
+function mapFetchFailure(error: unknown, signal: AbortSignal | undefined, timeoutMs: number): ZhihuSearchError {
   if (isAbortError(error)) {
     if (signal?.aborted) return abortError(signal)
-    return new WebError(`Zhihu search timed out after ${String(timeoutMs)}ms`, 'WEB_PROVIDER_ERROR', { cause: error })
+    return new ZhihuSearchError(`Zhihu search timed out after ${String(timeoutMs)}ms`, 'ZHIHU_SEARCH_ERROR', { cause: error })
   }
-  return new WebError(`Zhihu search request failed: ${String(error)}`, 'WEB_PROVIDER_ERROR', { cause: error })
+  return new ZhihuSearchError(`Zhihu search request failed: ${String(error)}`, 'ZHIHU_SEARCH_ERROR', { cause: error })
 }
 
-async function mapHttpError(response: Response, signal: AbortSignal | undefined): Promise<WebError> {
+async function mapHttpError(response: Response, signal: AbortSignal | undefined): Promise<ZhihuSearchError> {
   const status = response.status
   let message = `Zhihu API error (HTTP ${String(status)})`
   try {
@@ -227,15 +227,11 @@ async function mapHttpError(response: Response, signal: AbortSignal | undefined)
   } catch (error: unknown) {
     if (isAbortError(error)) throw abortError(signal)
   }
-  return new WebError(message, 'WEB_PROVIDER_ERROR')
+  return new ZhihuSearchError(message, 'ZHIHU_SEARCH_ERROR')
 }
 
-function abortError(signal: AbortSignal | undefined): WebError {
-  return new WebError('Zhihu search aborted', 'WEB_ABORTED', { cause: signal?.reason })
-}
-
-function isPositiveInteger(value: number): boolean {
-  return Number.isInteger(value) && value > 0
+function abortError(signal: AbortSignal | undefined): ZhihuSearchError {
+  return new ZhihuSearchError('Zhihu search aborted', 'ZHIHU_SEARCH_ABORTED', { cause: signal?.reason })
 }
 
 function isAbortError(error: unknown): boolean {

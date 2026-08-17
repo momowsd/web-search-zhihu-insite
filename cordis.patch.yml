@@ -1,14 +1,9 @@
-# Applied after @deepseek-ai/dsh-base. Pin search to Zhihu in-site and register
-# the provider plugin. Later profile / home / --patch layers can still override
-# `web.config.searchProvider` or `$DSH_WEB_SEARCH_PROVIDER`.
-
-- id: web
-  name: '@deepseek-ai/dsh-web'
-  config:
-    searchProvider: zhihu-insite-search
+# Applied after @deepseek-ai/dsh-base. Insert the model-facing `zhihu_search`
+# tool. This patch does NOT touch `web.config.searchProvider`, so it can sit
+# beside `@wangshaodan/web-search-zhihu` (which backs `web_search`).
 
 - insert:
-    - id: web-search-zhihu-insite
+    - id: tool-zhihu-search
       name: '@wangshaodan/web-search-zhihu-insite'
       config:
         apiKeyEnv: ZHIHU_ACCESS_SECRET

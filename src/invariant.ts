@@ -9,13 +9,13 @@ import type { InvariantInstaller } from '@deepseek-ai/dsh-invariants'
 const PACKAGE_NAME = '@wangshaodan/web-search-zhihu-insite'
 
 /** Cordis companion plugin name. */
-export const name = 'web-search-zhihu-insite-invariant'
+export const name = 'tool-zhihu-search-invariant'
 /** Service required before the companion can reserve package ownership. */
 export const inject = ['invariants']
 
 /**
- * No runtime invariant: this package exposes no independent event sequence or
- * mutable data relation beyond contracts enforced at its owning seam.
+ * No runtime invariant: this model-facing adapter has no independent lifecycle
+ * stream; execution relations are owned by the HTTP client it calls.
  */
 const install: InvariantInstaller = () => {}
 

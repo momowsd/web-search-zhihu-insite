@@ -1,7 +1,7 @@
 {
   "name": "@wangshaodan/web-search-zhihu-insite",
-  "description": "Zhihu in-site search provider for the DeepSeek Harness web capability seam (ctx.web)",
-  "version": "0.1.0",
+  "description": "Model-facing zhihu_search tool for Zhihu in-site search in DeepSeek Harness",
+  "version": "0.2.0",
   "publishConfig": {
     "access": "public"
   },
@@ -48,13 +48,15 @@
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/dsh-invariants": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-launch-environment": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-web": "^0.1.0-rc.6"
+    "@deepseek-ai/dsh-system-prompt": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/cordis": { "optional": true },
     "@deepseek-ai/dsh-invariants": { "optional": true },
     "@deepseek-ai/dsh-launch-environment": { "optional": true },
-    "@deepseek-ai/dsh-web": { "optional": true }
+    "@deepseek-ai/dsh-system-prompt": { "optional": true },
+    "@deepseek-ai/dsh-tools": { "optional": true }
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.1"
@@ -63,7 +65,9 @@
     "@deepseek-ai/cordis": "4.0.1",
     "@deepseek-ai/dsh-invariants": "0.1.0-rc.6",
     "@deepseek-ai/dsh-launch-environment": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-web": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-llm": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-system-prompt": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-tools": "0.1.0-rc.6",
     "@types/node": "^22.20.0",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"

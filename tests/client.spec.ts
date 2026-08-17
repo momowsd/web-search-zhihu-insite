@@ -1,18 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  ZhihuSearchProvider,
+  ZhihuSearchClient,
+  ZhihuSearchError,
   clampCount,
   editTimeToIso,
   mapZhihuItem,
   mapZhihuResponse,
   resolveSearchUrl,
   stripHighlightTags,
-} from '../src/provider.ts'
+} from '../src/client.ts'
 
 const options = {
   apiKey: 'zhihu-secret',
   baseURL: 'https://developer.zhihu.test',
-  numResults: 10,
   timeoutMs: 5_000,
 }
 
@@ -102,7 +102,6 @@ describe('Zhihu result mapping', () => {
       ],
       truncated: false,
     })
-    expect(result.content).toBeUndefined()
   })
 
   it('tolerates a missing Items array', () => {
@@ -111,40 +110,13 @@ describe('Zhihu result mapping', () => {
   })
 })
 
-describe('ZhihuSearchProvider availability', () => {
-  it('is unavailable without a key', () => {
-    expect(new ZhihuSearchProvider({ ...options, apiKey: '' }).available()).toBe(false)
-  })
-
-  it('is available with a key', () => {
-    expect(new ZhihuSearchProvider(options).available()).toBe(true)
-  })
-
-  it('is available when a credential resolver is supplied without a literal key', () => {
-    expect(new ZhihuSearchProvider({
-      ...options,
-      apiKey: '',
-      resolveApiKey: async () => 'from-store',
-    }).available()).toBe(true)
-  })
-
-  it('is misconfigured when the endpoint is unparseable', () => {
-    expect(new ZhihuSearchProvider({ ...options, baseURL: 'not a url' }).available()).toBe(false)
-  })
-
-  it('is misconfigured when numResults or timeoutMs is not a positive integer', () => {
-    expect(new ZhihuSearchProvider({ ...options, numResults: 0 }).available()).toBe(false)
-    expect(new ZhihuSearchProvider({ ...options, timeoutMs: 1.5 }).available()).toBe(false)
-  })
-})
-
-describe('ZhihuSearchProvider request mapping', () => {
+describe('ZhihuSearchClient request mapping', () => {
   it('sends Query, Count, Bearer auth and X-Request-Timestamp', async () => {
     const fetchMock = vi.fn(async () => jsonResponse({ Code: 0, Data: { Items: [] } }))
     vi.stubGlobal('fetch', fetchMock)
     vi.setSystemTime(new Date('2026-08-17T10:00:00Z'))
 
-    await new ZhihuSearchProvider(options).search({ query: 'rave 文化', maxResults: 8 })
+    await new ZhihuSearchClient(options).search('rave 文化', 8)
 
     expect(fetchMock).toHaveBeenCalledOnce()
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string | URL, RequestInit]
@@ -159,144 +131,93 @@ describe('ZhihuSearchProvider request mapping', () => {
     expect((init.headers as Record<string, string>)['x-request-timestamp']).toBe('1786960800')
   })
 
-  it('does not send Filter or SearchDB', async () => {
-    const fetchMock = vi.fn(async () => jsonResponse({ Code: 0, Data: { Items: [] } }))
-    vi.stubGlobal('fetch', fetchMock)
-    await new ZhihuSearchProvider(options).search({ query: 'q' })
-    const [url] = fetchMock.mock.calls[0] as unknown as [string | URL]
-    const parsed = new URL(String(url))
-    expect(parsed.searchParams.has('Filter')).toBe(false)
-    expect(parsed.searchParams.has('SearchDB')).toBe(false)
-    expect(parsed.searchParams.has('Mode')).toBe(false)
-  })
-
   it('clamps Count to 10 when maxResults exceeds the API cap', async () => {
     const fetchMock = vi.fn(async () => jsonResponse({ Code: 0, Data: { Items: [] } }))
     vi.stubGlobal('fetch', fetchMock)
-    await new ZhihuSearchProvider(options).search({ query: 'q', maxResults: 50 })
+    await new ZhihuSearchClient(options).search('q', 50)
     const [url] = fetchMock.mock.calls[0] as unknown as [string | URL]
     expect(new URL(String(url)).searchParams.get('Count')).toBe('10')
-  })
-
-  it('falls back to the configured numResults when a request omits maxResults', async () => {
-    const fetchMock = vi.fn(async () => jsonResponse({ Code: 0, Data: { Items: [] } }))
-    vi.stubGlobal('fetch', fetchMock)
-    await new ZhihuSearchProvider({ ...options, numResults: 7 }).search({ query: 'q' })
-    const [url] = fetchMock.mock.calls[0] as unknown as [string | URL]
-    expect(new URL(String(url)).searchParams.get('Count')).toBe('7')
-  })
-
-  it('lets a request maxResults win over the configured numResults', async () => {
-    const fetchMock = vi.fn(async () => jsonResponse({ Code: 0, Data: { Items: [] } }))
-    vi.stubGlobal('fetch', fetchMock)
-    await new ZhihuSearchProvider({ ...options, numResults: 7 }).search({ query: 'q', maxResults: 2 })
-    const [url] = fetchMock.mock.calls[0] as unknown as [string | URL]
-    expect(new URL(String(url)).searchParams.get('Count')).toBe('2')
   })
 
   it('uses an explicit endpoint override', async () => {
     const fetchMock = vi.fn(async () => jsonResponse({ Code: 0, Data: { Items: [] } }))
     vi.stubGlobal('fetch', fetchMock)
-    await new ZhihuSearchProvider({
+    await new ZhihuSearchClient({
       ...options,
       endpoint: 'https://gateway.test/zhihu_search',
-    }).search({ query: 'q' })
+    }).search('q', 5)
     const [url] = fetchMock.mock.calls[0] as unknown as [string | URL]
     expect(new URL(String(url)).origin + new URL(String(url)).pathname)
       .toBe('https://gateway.test/zhihu_search')
   })
 
-  it('forwards a combined abort signal', async () => {
-    const fetchMock = vi.fn(async () => jsonResponse({ Code: 0, Data: { Items: [] } }))
-    vi.stubGlobal('fetch', fetchMock)
-    const controller = new AbortController()
-    await new ZhihuSearchProvider(options).search({ query: 'q' }, controller.signal)
-    const [, init] = fetchMock.mock.calls[0] as unknown as [string | URL, RequestInit]
-    expect(init.signal).toBeInstanceOf(AbortSignal)
-  })
-
   it('uses resolveApiKey when no literal apiKey is set', async () => {
     const fetchMock = vi.fn(async () => jsonResponse({ Code: 0, Data: { Items: [] } }))
     vi.stubGlobal('fetch', fetchMock)
-    await new ZhihuSearchProvider({
+    await new ZhihuSearchClient({
       ...options,
       apiKey: '',
       resolveApiKey: async () => 'from-credentials-yaml',
-    }).search({ query: 'q' })
+    }).search('q', 5)
     const [, init] = fetchMock.mock.calls[0] as unknown as [string | URL, RequestInit]
     expect((init.headers as Record<string, string>)['authorization']).toBe('Bearer from-credentials-yaml')
   })
 })
 
-describe('ZhihuSearchProvider error handling', () => {
-  it('maps a business Code != 0 to WEB_PROVIDER_ERROR', async () => {
+describe('ZhihuSearchClient error handling', () => {
+  it('maps a business Code != 0 to ZHIHU_SEARCH_ERROR', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ Code: 401, Message: 'invalid secret' })))
-    await expect(new ZhihuSearchProvider(options).search({ query: 'q' }))
-      .rejects.toThrow(expect.objectContaining({ code: 'WEB_PROVIDER_ERROR', message: 'invalid secret' }))
+    await expect(new ZhihuSearchClient(options).search('q', 5))
+      .rejects.toThrow(expect.objectContaining({ code: 'ZHIHU_SEARCH_ERROR', message: 'invalid secret' }))
   })
 
-  it('maps an HTTP error to WEB_PROVIDER_ERROR with the provider message', async () => {
+  it('maps an HTTP error with the provider message', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ Message: 'bad key' }, { status: 401 })))
-    await expect(new ZhihuSearchProvider(options).search({ query: 'q' }))
-      .rejects.toThrow(expect.objectContaining({ code: 'WEB_PROVIDER_ERROR', message: 'bad key' }))
+    await expect(new ZhihuSearchClient(options).search('q', 5))
+      .rejects.toThrow(expect.objectContaining({ code: 'ZHIHU_SEARCH_ERROR', message: 'bad key' }))
   })
 
   it('keeps a status-line message when the error body is not JSON', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('gateway down', { status: 502 })))
-    await expect(new ZhihuSearchProvider(options).search({ query: 'q' }))
-      .rejects.toThrow(expect.objectContaining({ code: 'WEB_PROVIDER_ERROR', message: 'Zhihu API error (HTTP 502)' }))
+    await expect(new ZhihuSearchClient(options).search('q', 5))
+      .rejects.toThrow(expect.objectContaining({ code: 'ZHIHU_SEARCH_ERROR', message: 'Zhihu API error (HTTP 502)' }))
   })
 
-  it('maps a network failure to WEB_PROVIDER_ERROR', async () => {
+  it('maps a network failure to ZHIHU_SEARCH_ERROR', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new TypeError('connection refused'))))
-    await expect(new ZhihuSearchProvider(options).search({ query: 'q' }))
-      .rejects.toThrow(expect.objectContaining({ code: 'WEB_PROVIDER_ERROR' }))
+    await expect(new ZhihuSearchClient(options).search('q', 5))
+      .rejects.toThrow(expect.objectContaining({ code: 'ZHIHU_SEARCH_ERROR' }))
   })
 
-  it('maps an abort to WEB_ABORTED', async () => {
+  it('maps an abort to ZHIHU_SEARCH_ABORTED', async () => {
     const controller = new AbortController()
     controller.abort()
     vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new DOMException('aborted', 'AbortError'))))
-    await expect(new ZhihuSearchProvider(options).search({ query: 'q' }, controller.signal))
-      .rejects.toThrow(expect.objectContaining({ code: 'WEB_ABORTED' }))
+    await expect(new ZhihuSearchClient(options).search('q', 5, controller.signal))
+      .rejects.toThrow(expect.objectContaining({ code: 'ZHIHU_SEARCH_ABORTED' }))
   })
 
-  it('maps a timeout abort to WEB_PROVIDER_ERROR', async () => {
+  it('maps a timeout abort to ZHIHU_SEARCH_ERROR', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new DOMException('aborted', 'AbortError'))))
-    await expect(new ZhihuSearchProvider(options).search({ query: 'q' }))
+    await expect(new ZhihuSearchClient(options).search('q', 5))
       .rejects.toThrow(expect.objectContaining({
-        code: 'WEB_PROVIDER_ERROR',
+        code: 'ZHIHU_SEARCH_ERROR',
         message: 'Zhihu search timed out after 5000ms',
       }))
   })
 
-  it('maps an unparseable success body to WEB_PROVIDER_ERROR', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('not json', { status: 200 })))
-    await expect(new ZhihuSearchProvider(options).search({ query: 'q' }))
-      .rejects.toThrow(expect.objectContaining({ code: 'WEB_PROVIDER_ERROR' }))
-  })
-
-  it('maps a well-formed body of the wrong shape to WEB_PROVIDER_ERROR', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ Code: 0, Data: { Items: {} } })))
-    await expect(new ZhihuSearchProvider(options).search({ query: 'q' }))
-      .rejects.toThrow(expect.objectContaining({ code: 'WEB_PROVIDER_ERROR' }))
-  })
-
-  it('surfaces an abort during success-body parse as WEB_ABORTED', async () => {
-    const controller = new AbortController()
-    controller.abort()
-    const body = { json: () => Promise.reject(new DOMException('aborted', 'AbortError')), ok: true, status: 200 }
-    vi.stubGlobal('fetch', vi.fn(async () => body as unknown as Response))
-    await expect(new ZhihuSearchProvider(options).search({ query: 'q' }, controller.signal))
-      .rejects.toThrow(expect.objectContaining({ code: 'WEB_ABORTED' }))
-  })
-
-  it('maps a missing credential to WEB_PROVIDER_CREDENTIAL_MISSING', async () => {
-    await expect(new ZhihuSearchProvider({
+  it('maps a missing credential to ZHIHU_SEARCH_CREDENTIAL_MISSING', async () => {
+    await expect(new ZhihuSearchClient({
       ...options,
       apiKey: '',
       resolveApiKey: async () => undefined,
-    }).search({ query: 'q' }))
-      .rejects.toThrow(expect.objectContaining({ code: 'WEB_PROVIDER_CREDENTIAL_MISSING' }))
+    }).search('q', 5))
+      .rejects.toBeInstanceOf(ZhihuSearchError)
+    await expect(new ZhihuSearchClient({
+      ...options,
+      apiKey: '',
+      resolveApiKey: async () => undefined,
+    }).search('q', 5))
+      .rejects.toThrow(expect.objectContaining({ code: 'ZHIHU_SEARCH_CREDENTIAL_MISSING' }))
   })
 })

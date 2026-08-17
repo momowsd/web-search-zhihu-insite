@@ -1,7 +1,22 @@
 /**
- * Wire types for Zhihu OpenAPI `GET /api/v1/content/zhihu_search`.
+ * Wire types for Zhihu OpenAPI `GET /api/v1/content/zhihu_search`, plus the
+ * model-facing search result the `zhihu_search` tool returns.
  * @module @wangshaodan/web-search-zhihu-insite/types
  */
+
+/** One citeable source in a `zhihu_search` result. */
+export interface ZhihuSearchSource {
+  url: string
+  title?: string
+  snippet?: string
+  publishedAt?: string
+}
+
+/** Canonical `zhihu_search` output value. */
+export interface ZhihuSearchResult {
+  sources: ZhihuSearchSource[]
+  truncated: boolean
+}
 
 /** One entry of Zhihu's `Data.Items[]`. Unused fields are ignored at map time. */
 export interface ZhihuSearchItem {
